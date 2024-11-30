@@ -19,35 +19,112 @@ class CustomHalfCheetahEnv(gym.Wrapper):
         # 치타의 올바른 자세를 정의 (근사값)
         self.target_height = 0.7  # 치타의 목표 높이
         self.target_orientation = 0.0  # 치타의 목표 방향 (0은 수평)
+        
+        # 환경 정보 출력 (디버깅용)
+        print("\nHalfCheetah Environment Info:")
+        print(f"Observation Space: {env.observation_space}")
+        print(f"Action Space: {env.action_space}")
+        
+        # 상태 공간 크기 저장
+        self.qpos_dim = env.unwrapped.model.nq  # position 차원
+        self.qvel_dim = env.unwrapped.model.nv  # velocity 차원
+        
+        print(f"\nState Space Details:")
+        print(f"Position dimension (nq): {self.qpos_dim}")
+        print(f"Velocity dimension (nv): {self.qvel_dim}")
+        
+        # 관절 정보 설정
+        # HalfCheetah는 다음과 같은 구조를 가짐:
+        # qpos: [x, z, theta, bthigh, bshin, bfoot, fthigh, fshin, ffoot]
+        # qvel: [dx, dz, dtheta, dbthigh, dbshin, dbfoot, dfthigh, dfshin, dffoot]
+        self.joint_structure = {
+            'root': {'pos': slice(0, 3), 'vel': slice(0, 3)},  # x, z, rotation
+            'back_leg': {'pos': slice(3, 6), 'vel': slice(3, 6)},  # bthigh, bshin, bfoot
+            'front_leg': {'pos': slice(6, 9), 'vel': slice(6, 9)}  # fthigh, fshin, ffoot
+        }
+    
+    def get_joint_info(self):
+        """현재 관절 상태 정보를 안전하게 가져옵니다."""
+        try:
+            qpos = self.env.unwrapped.data.qpos
+            qvel = self.env.unwrapped.data.qvel
+            
+            info = {
+                'root': {
+                    'pos': qpos[self.joint_structure['root']['pos']],
+                    'vel': qvel[self.joint_structure['root']['vel']]
+                },
+                'back_leg': {
+                    'pos': qpos[self.joint_structure['back_leg']['pos']],
+                    'vel': qvel[self.joint_structure['back_leg']['vel']]
+                },
+                'front_leg': {
+                    'pos': qpos[self.joint_structure['front_leg']['pos']],
+                    'vel': qvel[self.joint_structure['front_leg']['vel']]
+                }
+            }
+            return info
+        except Exception as e:
+            print(f"Error getting joint info: {e}")
+            return None
     
     def step(self, action):
         next_state, reward, terminated, truncated, info = self.env.step(action)
         
-        # 기존 보상 (전진 속도)에 자세 보상을 추가
+        # 기존 보상 (전진 속도)
         forward_reward = reward
         
-        # 자세 보상 계산
-        root_pos = self.env.unwrapped.data.qpos[0:3]  # xyz 위치
-        root_orient = self.env.unwrapped.data.qpos[3:7]  # 방향
-        
-        # 높이 보상: 치타의 높이가 목표 높이에 가까울수록 보상
-        height_reward = -2.0 * abs(root_pos[2] - self.target_height)
-        
-        # 방향 보상: 치타가 수평을 유지할수록 보상
-        orientation_reward = -1.0 * abs(root_orient[1])  # pitch 각도 사용
-        
-        # 과도한 회전 페널티
-        rotation_penalty = -0.1 * np.sum(np.square(self.env.unwrapped.data.qvel[3:6]))
-        
-        # 최종 보상 계산
-        modified_reward = (
-            1.0 * forward_reward +  # 전진 보상
-            0.3 * height_reward +   # 높이 보상
-            0.3 * orientation_reward +  # 방향 보상
-            0.1 * rotation_penalty  # 회전 페널티
-        )
-        
-        return next_state, modified_reward, terminated, truncated, info
+        try:
+            # 관절 정보 가져오기
+            joint_info = self.get_joint_info()
+            if joint_info is None:
+                return next_state, forward_reward, terminated, truncated, info
+            
+            # 자세 보상 계산
+            root_pos = joint_info['root']['pos']
+            root_vel = joint_info['root']['vel']
+            
+            # 높이 보상: 치타의 높이가 목표 높이에 가까울수록 보상
+            height_reward = -2.0 * abs(root_pos[1] - self.target_height)  # z축이 1번 인덱스
+            
+            # 방향 보상: 치타가 수평을 유지할수록 보상
+            orientation_reward = -1.0 * abs(root_pos[2])  # theta
+            
+            # 과도한 회전 페널티
+            rotation_penalty = -0.1 * (root_vel[2] ** 2)  # dtheta
+            
+            # 다리 사용 보상
+            back_leg_vel = joint_info['back_leg']['vel']
+            front_leg_vel = joint_info['front_leg']['vel']
+            
+            # 앞뒤 다리 균형있게 사용하도록 보상
+            back_leg_activity = np.mean(np.square(back_leg_vel))
+            front_leg_activity = np.mean(np.square(front_leg_vel))
+            leg_balance_reward = -1.0 * abs(front_leg_activity - back_leg_activity)
+            
+            # 다리 활성도 보상 (모든 다리를 적절히 사용하도록)
+            leg_activity_reward = 0.2 * (front_leg_activity + back_leg_activity)
+            
+            # 에너지 효율성 (과도한 다리 움직임 억제)
+            all_joint_vel = np.concatenate([back_leg_vel, front_leg_vel])
+            energy_penalty = -0.05 * np.sum(np.square(all_joint_vel))
+            
+            # 최종 보상 계산
+            modified_reward = (
+                1.0 * forward_reward +     # 전진 보상
+                0.3 * height_reward +      # 높이 보상
+                0.3 * orientation_reward + # 방향 보상
+                0.1 * rotation_penalty +   # 회전 페널티
+                0.4 * leg_balance_reward + # 다리 균형 보상
+                0.3 * leg_activity_reward + # 다리 활성도 보상
+                0.2 * energy_penalty       # 에너지 효율성
+            )
+            
+            return next_state, modified_reward, terminated, truncated, info
+            
+        except Exception as e:
+            print(f"Error in reward calculation: {e}")
+            return next_state, forward_reward, terminated, truncated, info
 
 def seed_all(seed):
     random.seed(seed)
