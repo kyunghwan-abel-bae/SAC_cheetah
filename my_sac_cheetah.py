@@ -185,7 +185,7 @@ class SAC:
             a_prime, log_prob_prime = self.sample_action(s_prime)
             next_q1, next_q2 = self.target_critic(s_prime, a_prime)
             next_q = torch.min(next_q1, next_q2)
-            td_target = r + (1 - done) * gamma * (next_q - self.alpha * log_prob_prime)
+            td_target = r + (1 - done) * self.gamma * (next_q - self.alpha * log_prob_prime)
         
         # Update the critic network
         q1, q2 = self.critic(s, a)
@@ -262,127 +262,131 @@ def seed_all(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-env_name = 'HalfCheetah-v4'
+def main():
+    env_name = 'HalfCheetah-v4'
 
-seed = 0
-seed_all(seed)
-hidden_dims = (256, 256, )
-max_iterations = 100000
-eval_intervals = 10000
-eval_iterations = 10
+    seed = 0
+    seed_all(seed)
+    hidden_dims = (256, 256, )
+    max_iterations = 100000
+    eval_intervals = 10000
+    eval_iterations = 10
 
-buffer_size = int(1e6)
-min_buffer_size = 5000
-batch_size = 256
-gamma = 0.99
+    buffer_size = int(1e6)
+    min_buffer_size = 5000
+    batch_size = 256
+    gamma = 0.99
 
-env = gym.make(env_name)
-state_dim = env.observation_space.shape[0]
-action_dim = env.action_space.shape[0]
-agent = SAC(
-    state_dim,
-    action_dim,
-    hidden_dims=hidden_dims,
-    buffer_size=buffer_size,
-    min_buffer_size=min_buffer_size,
-    batch_size=batch_size,
-    gamma=gamma,
-)
+    env = gym.make(env_name)
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    agent = SAC(
+        state_dim,
+        action_dim,
+        hidden_dims=hidden_dims,
+        buffer_size=buffer_size,
+        min_buffer_size=min_buffer_size,
+        batch_size=batch_size,
+        gamma=gamma,
+    )
 
-logger = []
-(s, _), terminated, truncated = env.reset(seed=seed), False, False
-for t in tqdm(range(1, max_iterations + 1)):
-    a = agent.act(s)
-    s_prime, r, terminated, truncated, _ = env.step(a)
+    logger = []
+    (s, _), terminated, truncated = env.reset(seed=seed), False, False
+    for t in tqdm(range(1, max_iterations + 1)):
+        a = agent.act(s)
+        s_prime, r, terminated, truncated, _ = env.step(a)
 
-    result = agent.step((s, a, r, s_prime, terminated))
-    s = s_prime
+        result = agent.step((s, a, r, s_prime, terminated))
+        s = s_prime
 
-    if result is not None:
-        logger.append([t, 'policy_loss', result['policy_loss']])
-        logger.append([t, 'value_loss', result['value_loss']])
-    
-    if terminated or truncated:
-        (s, _), terminated, truncated = env.reset(), False, False
-    
-    if t % eval_intervals == 0:
-        score = evaluate(env_name, agent, seed, eval_iterations)
-        logger.append([t, 'Avg return', score])
+        if result is not None:
+            logger.append([t, 'policy_loss', result['policy_loss']])
+            logger.append([t, 'value_loss', result['value_loss']])
+        
+        if terminated or truncated:
+            (s, _), terminated, truncated = env.reset(), False, False
+        
+        if t % eval_intervals == 0:
+            score = evaluate(env_name, agent, seed, eval_iterations)
+            logger.append([t, 'Avg return', score])
 
-        # 주기적으로 모델 저장
-        agent.save_model(f'saved_models/checkpoint_{t}')
-    
-# 최종 모델 저장
-agent.save_model('saved_models/final_model')
+            # 주기적으로 모델 저장
+            agent.save_model(f'saved_models/checkpoint_{t}')
+        
+    # 최종 모델 저장
+    agent.save_model('saved_models/final_model')
 
-######여기서부터
+    ######여기서부터
 
-logger = pd.DataFrame(logger)
-logger.columns = ['step', 'key', 'value']
+    logger = pd.DataFrame(logger)
+    logger.columns = ['step', 'key', 'value']
 
-fig = plt.figure(figsize=(12, 4))
+    fig = plt.figure(figsize=(12, 4))
 
-ax = fig.add_subplot(1, 3, 1)
-key = 'Avg return'
-ax.plot(logger.loc[logger['key'] == key, 'step'], logger.loc[logger['key'] == key, 'value'], 'b-')
-ax.grid(axis='y')
-ax.set_title("Average return over 10 episodes")
-ax.set_xlabel('Steps')
-ax.set_ylabel('Avg return')
+    ax = fig.add_subplot(1, 3, 1)
+    key = 'Avg return'
+    ax.plot(logger.loc[logger['key'] == key, 'step'], logger.loc[logger['key'] == key, 'value'], 'b-')
+    ax.grid(axis='y')
+    ax.set_title("Average return over 10 episodes")
+    ax.set_xlabel('Steps')
+    ax.set_ylabel('Avg return')
 
-ax = fig.add_subplot(1, 3, 2)
-key = 'policy_loss'
-ax.plot(logger.loc[logger['key'] == key, 'step'], logger.loc[logger['key'] == key, 'value'], 'b-')
-ax.grid(axis='y')
-ax.set_title("Policy loss")
-ax.set_xlabel('Steps')
-ax.set_ylabel('Policy loss')
+    ax = fig.add_subplot(1, 3, 2)
+    key = 'policy_loss'
+    ax.plot(logger.loc[logger['key'] == key, 'step'], logger.loc[logger['key'] == key, 'value'], 'b-')
+    ax.grid(axis='y')
+    ax.set_title("Policy loss")
+    ax.set_xlabel('Steps')
+    ax.set_ylabel('Policy loss')
 
-ax = fig.add_subplot(1, 3, 3)
-key = 'value_loss'
-ax.plot(logger.loc[logger['key'] == key, 'step'], logger.loc[logger['key'] == key, 'value'], 'b-')
-ax.grid(axis='y')
-ax.set_title("Value loss")
-ax.set_xlabel('Steps')
-ax.set_ylabel('Value loss')
+    ax = fig.add_subplot(1, 3, 3)
+    key = 'value_loss'
+    ax.plot(logger.loc[logger['key'] == key, 'step'], logger.loc[logger['key'] == key, 'value'], 'b-')
+    ax.grid(axis='y')
+    ax.set_title("Value loss")
+    ax.set_xlabel('Steps')
+    ax.set_ylabel('Value loss')
 
-plt.tight_layout()
-plt.savefig('training_results.png')
-plt.show()
+    plt.tight_layout()
+    plt.savefig('training_results.png')
+    plt.show()
 
-######여기까지
+    ######여기까지
 
-# 학습 결과 시각화
-'''
-logger = np.array(logger)
+    # 학습 결과 시각화
+    '''
+    logger = np.array(logger)
 
-plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(12, 8))
 
-# Plot policy loss
-policy_loss_data = logger[logger[:, 1] == 'policy_loss']
-plt.subplot(3, 1, 1)
-plt.plot(policy_loss_data[:, 0], policy_loss_data[:, 2])
-plt.title('Policy Loss')
-plt.xlabel('Steps')
-plt.ylabel('Loss')
+    # Plot policy loss
+    policy_loss_data = logger[logger[:, 1] == 'policy_loss']
+    plt.subplot(3, 1, 1)
+    plt.plot(policy_loss_data[:, 0], policy_loss_data[:, 2])
+    plt.title('Policy Loss')
+    plt.xlabel('Steps')
+    plt.ylabel('Loss')
 
-# Plot value loss
-value_loss_data = logger[logger[:, 1] == 'value_loss']
-plt.subplot(3, 1, 2)
-plt.plot(value_loss_data[:, 0], value_loss_data[:, 2])
-plt.title('Value Loss')
-plt.xlabel('Steps')
-plt.ylabel('Loss')
+    # Plot value loss
+    value_loss_data = logger[logger[:, 1] == 'value_loss']
+    plt.subplot(3, 1, 2)
+    plt.plot(value_loss_data[:, 0], value_loss_data[:, 2])
+    plt.title('Value Loss')
+    plt.xlabel('Steps')
+    plt.ylabel('Loss')
 
-# Plot average return
-avg_return_data = logger[logger[:, 1] == 'Avg return']
-plt.subplot(3, 1, 3)
-plt.plot(avg_return_data[:, 0], avg_return_data[:, 2])
-plt.title('Average Return')
-plt.xlabel('Steps')
-plt.ylabel('Return')
+    # Plot average return
+    avg_return_data = logger[logger[:, 1] == 'Avg return']
+    plt.subplot(3, 1, 3)
+    plt.plot(avg_return_data[:, 0], avg_return_data[:, 2])
+    plt.title('Average Return')
+    plt.xlabel('Steps')
+    plt.ylabel('Return')
 
-plt.tight_layout()
-plt.savefig('training_results.png')
-plt.show()
-'''
+    plt.tight_layout()
+    plt.savefig('training_results.png')
+    plt.show()
+    '''
+
+if __name__ == '__main__':
+    main()
